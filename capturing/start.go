@@ -3,6 +3,7 @@ package capturing
 import (
 	"github.com/sirupsen/logrus"
 	"net"
+	"context"
 )
 
 const numberOfConcurrentConnections = 1
@@ -70,6 +71,7 @@ func handleConn(in <-chan ProxyConnection, out chan<- ProxyConnection) {
 		handleProxyConnection(proxyConnection)
 		out <- proxyConnection
 	}
+	logrus.Debug("connection handler finished")
 }
 
 func closeConn(in <-chan ProxyConnection) {
@@ -77,9 +79,10 @@ func closeConn(in <-chan ProxyConnection) {
 		proxyConnection.sourceConnection.Close()
 		logrus.Debug("Closed client connection")
 	}
+	logrus.Debug("connection closer finished")
 }
 
-func StartProxy(proxyConfig ProxyConfig) {
+func StartProxy(proxyConfig ProxyConfig, ctx context.Context) {
 	logrus.Debugf("Staring CapturingProxy: %v\nProxying: %v\n\n", proxyConfig.ProxyAddress, proxyConfig.TargetAddress)
 	addr, err := net.ResolveTCPAddr("tcp", proxyConfig.ProxyAddress)
 	if err != nil {
@@ -98,24 +101,28 @@ func StartProxy(proxyConfig ProxyConfig) {
 	go closeConn(complete)
 
 	go func() {
-		for {
-			conn, err := listener.AcceptTCP()
-			if err != nil {
-				panic(err)
-			}
+		isRunning := true
+		for isRunning {
+			select {
+			case <-ctx.Done():
+				isRunning = false
+				break
+			default:
 
-			pending <- ProxyConnection{
-				sourceConnection: conn,
-				targetAddress:    proxyConfig.TargetAddress,
-				RecordName:       proxyConfig.RecordName,
+
+				conn, err := listener.AcceptTCP()
+				if err != nil {
+					panic(err)
+				}
+
+				pending <- ProxyConnection{
+					sourceConnection: conn,
+					targetAddress:    proxyConfig.TargetAddress,
+					RecordName:       proxyConfig.RecordName,
+				}
 			}
 		}
+		logrus.Debug("shutting down proxy listener")
+		listener.Close()
 	}()
-}
-
-func StartCapture(config CapturingConfig) {
-	for _, proxyConfig := range config.ProxyConfigs {
-		proxyConfig.RecordName = config.RecordName
-		StartProxy(proxyConfig)
-	}
 }
